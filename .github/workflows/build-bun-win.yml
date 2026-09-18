@@ -56,7 +56,7 @@ jobs:
 
       - name: Install system deps
         run: |
-          choco install -y ninja ccache
+          choco install -y ninja ccache nasm
           mkdir -p /tmp/llvm-dl
           for i in 1 2 3; do
             curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
@@ -74,20 +74,15 @@ jobs:
 
       - name: Install nasm
         run: |
-          rm -rf "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
-          mkdir -p "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
-          for i in 1 2 3; do
-            curl -fsSL "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip" -o "$RUNNER_TEMP/nasm-dl/nasm.zip" && break
-            echo "nasm download attempt $i failed"
-            rm -f "$RUNNER_TEMP/nasm-dl/nasm.zip"
-            [ $i -lt 3 ] && sleep 10
-          done
-          [ -s "$RUNNER_TEMP/nasm-dl/nasm.zip" ] || { echo "nasm download failed"; exit 1; }
-          powershell -NoProfile -Command "Expand-Archive -Path '$RUNNER_TEMP/nasm-dl/nasm.zip' -DestinationPath '$RUNNER_TEMP/nasm-extract'"
-          NASM_EXE=$(find "$RUNNER_TEMP/nasm-extract" -type f -name "nasm.exe" | head -1)
-          [ -n "$NASM_EXE" ] || { echo "nasm.exe not found in archive"; exit 1; }
+          NASM_EXE=$(find "/c/ProgramData/chocolatey" "/c/Program Files" "/c/Program Files (x86)" -type f -name "nasm.exe" 2>/dev/null | head -1)
+          if [ -z "$NASM_EXE" ]; then
+            echo "nasm.exe not found after choco install, searching..."
+            find /c -maxdepth 5 -iname "nasm*" 2>/dev/null | head -10
+            exit 1
+          fi
+          echo "Found nasm at $NASM_EXE"
           cp "$NASM_EXE" /c/llvm/bin/nasm.exe
-          rm -rf "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
+          export PATH="/c/llvm/bin:$PATH"
           nasm -v
 
       - name: Setup ccache
