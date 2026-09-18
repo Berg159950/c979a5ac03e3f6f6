@@ -54,8 +54,18 @@ jobs:
 
       - name: Install system deps
         run: |
-          choco install -y llvm ninja ccache nasm
+          choco install -y ninja ccache nasm
+          for i in 1 2 3; do
+            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-win64.exe" -o "$RUNNER_TEMP/llvm-installer.exe" && break
+            echo "LLVM download attempt $i failed"
+            rm -f "$RUNNER_TEMP/llvm-installer.exe"
+            [ $i -lt 3 ] && sleep 30
+          done
+          [ -s "$RUNNER_TEMP/llvm-installer.exe" ] || { echo "LLVM download failed"; exit 1; }
+          "$RUNNER_TEMP/llvm-installer.exe" /S
           echo "C:/Program Files/LLVM/bin" >> $GITHUB_PATH
+          export PATH="C:/Program Files/LLVM/bin:$PATH"
+          clang-cl --version | head -2
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
