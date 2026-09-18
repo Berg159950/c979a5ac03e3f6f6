@@ -288,6 +288,9 @@ jobs:
           for pat in "popcnt" "vpopcntq\|vpopcntd" "vaes" "vzeroupper" "vpbroadcast"; do
             echo "$pat: $(grep -c "\b$pat" "$RUNNER_TEMP/disasm.txt" || true)"
           done
+          echo "=== popcnt by symbol (top 30) ==="
+          grep -nE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt" | head -5 || true
+          awk '/^0*[0-9a-f]+ </{sym=$0} /\bpopcnt\b/{count[sym]++} END{for (s in count) print count[s], s}' "$RUNNER_TEMP/disasm.txt" | sort -rn | head -30 || true
           if grep -qE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt"; then
             echo "ERROR: POPCNT instructions still present in binary!"
             grep -nE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt" | head -20
