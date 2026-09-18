@@ -176,6 +176,18 @@ jobs:
           done
           git checkout FETCH_HEAD
 
+      - name: Patch WebKit ps1 tar calls
+        run: |
+          cd "$BUN_SRC"
+          grep -rl "tar\.exe" vendor/WebKit --include="*.ps1" 2>/dev/null | while read f; do
+            if grep -q "System32.tar.exe" "$f"; then
+              echo "already patched: $f"
+            else
+              sed -i 's/\btar\.exe\b/C:\\Windows\\System32\\tar.exe/g' "$f"
+              echo "patched tar in $f"
+            fi
+          done
+
       - name: Patch WebKit simdutf
         run: |
           cd "$BUN_SRC"
