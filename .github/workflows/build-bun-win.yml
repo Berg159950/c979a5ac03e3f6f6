@@ -27,11 +27,13 @@ jobs:
     steps:
       - name: Resolve Bun tag
         id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "$BUN_TAG" ]; then
             TAG="$BUN_TAG"
           else
-            TAG=$(curl -fsSL https://api.github.com/repos/oven-sh/bun/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+            TAG=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/oven-sh/bun/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
           fi
           [ -n "$TAG" ] || { echo "Failed to resolve Bun tag"; exit 1; }
           echo "tag=$TAG" >> $GITHUB_OUTPUT
