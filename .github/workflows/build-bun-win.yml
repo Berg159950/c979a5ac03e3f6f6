@@ -51,10 +51,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore intermediate bun binary
+        id: restore
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: build-bun-win.yml
+          name: stage-bun-win-x64-${{ needs.check-version.outputs.version }}-${{ hashFiles('.github/workflows/build-bun-win.yml') }}
+          path: ${{ runner.temp }}/stage
+          if-no-artifact-found: warn
+
       - name: Setup MSVC env
+        if: steps.restore.outputs.found_artifact != 'true'
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install system deps
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           choco install -y ninja ccache nasm
           mkdir -p /tmp/llvm-dl
@@ -73,19 +85,30 @@ jobs:
           clang-cl --version | head -2
 
       - name: Install nasm
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
-          NASM_EXE=$(find "/c/ProgramData/chocolatey" "/c/Program Files" "/c/Program Files (x86)" -type f -name "nasm.exe" 2>/dev/null | head -1)
+          NASM_EXE=""
+          for d in "/c/ProgramData/chocolatey/bin" "/c/Program Files/NASM" "/c/Program Files/nasm"; do
+            if [ -x "$d/nasm.exe" ]; then NASM_EXE="$d/nasm.exe"; break; fi
+          done
           if [ -z "$NASM_EXE" ]; then
-            echo "nasm.exe not found after choco install, searching..."
-            find /c -maxdepth 5 -iname "nasm*" 2>/dev/null | head -10
-            exit 1
+            echo "nasm not on PATH, inspecting choco lib..."
+            ls /c/ProgramData/chocolatey/lib/ 2>/dev/null | grep -i nasm || true
+            NASM_EXE=$(find /c/ProgramData/chocolatey/lib -maxdepth 3 -name "nasm.exe" 2>/dev/null | head -1 || true)
           fi
-          echo "Found nasm at $NASM_EXE"
+          if [ -z "$NASM_EXE" ]; then
+            echo "installing nasm via winget..."
+            winget install -e --id NASM.NASM --accept-package-agreements --accept-source-agreements --silent
+            NASM_EXE=$(find "/c/Program Files" -maxdepth 2 -name "nasm.exe" 2>/dev/null | head -1 || true)
+          fi
+          [ -n "$NASM_EXE" ] || { echo "ERROR: nasm unavailable"; exit 1; }
+          echo "Using nasm at $NASM_EXE"
           cp "$NASM_EXE" /c/llvm/bin/nasm.exe
           export PATH="/c/llvm/bin:$PATH"
           nasm -v
 
       - name: Setup ccache
+        if: steps.restore.outputs.found_artifact != 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: bun-penryn-win-${{ needs.check-version.outputs.version }}
@@ -94,11 +117,13 @@ jobs:
           max-size: 3G
 
       - name: Setup Bun (for build script)
+        if: steps.restore.outputs.found_artifact != 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
       - name: Clone Bun
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           SRC="$RUNNER_TEMP/bun-src"
           for i in 1 2 3; do
@@ -115,6 +140,7 @@ jobs:
           echo "BUN_SRC=$SRC" >> $GITHUB_ENV
 
       - name: Resolve WebKit version from Bun source
+        if: steps.restore.outputs.found_artifact != 'true'
         id: webkit
         run: |
           cd "$BUN_SRC"
@@ -133,6 +159,7 @@ jobs:
           echo "Resolved WebKit version: $WEBKIT_VER"
 
       - name: Apply Penryn patch
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
           sed -i 's/-march=nehalem/-march=penryn/g' scripts/build/flags.ts
@@ -161,6 +188,7 @@ jobs:
           grep -rn --include="CMakeLists.txt" --include="*.ts" --include="*.rs" --exclude-dir=test --exclude-dir=.git "march=nehalem\|target-cpu=nehalem" . && { echo "ERROR: Nehalem still present!"; exit 1; } || echo "All Nehalem references patched successfully"
 
       - name: Clone WebKit (required for --webkit=local)
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           rm -rf "$BUN_SRC/vendor/WebKit"
           mkdir -p "$BUN_SRC/vendor"
@@ -177,6 +205,7 @@ jobs:
           git checkout FETCH_HEAD
 
       - name: Patch WebKit ps1 tar calls
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
           { grep -rl "tar\.exe" vendor/WebKit --include="*.ps1" 2>/dev/null || true; } | while read f; do
@@ -189,6 +218,7 @@ jobs:
           done
 
       - name: Patch WebKit simdutf
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
           WD="vendor/WebKit/Source/WTF/wtf/simdutf"
@@ -209,11 +239,13 @@ jobs:
           grep -rn "_popcnt64\|_popcnt32\|__popcnt64\|__popcnt\b\|_mm_popcnt_u64\|_mm_popcnt_u32" "$WD" 2>/dev/null && { echo "ERROR: POPCNT intrinsics still present in simdutf!"; exit 1; } || echo "simdutf: POPCNT intrinsics removed OK"
 
       - name: Build Bun (with local WebKit)
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
           bun run build:release --webkit=local 2>&1
 
-      - name: Native verify
+      - name: Stage built binary
+        if: steps.restore.outputs.found_artifact != 'true'
         run: |
           echo "BUN_SRC=$BUN_SRC"
           BUN_BIN=$(find "$BUN_SRC/build" -maxdepth 4 -type f -name "bun.exe" 2>/dev/null | head -1 || true)
@@ -224,6 +256,24 @@ jobs:
             exit 1
           fi
           echo "BUN_BIN=$BUN_BIN" >> $GITHUB_ENV
+          mkdir -p "$RUNNER_TEMP/stage"
+          cp "$BUN_BIN" "$RUNNER_TEMP/stage/bun.bin.exe"
+
+      - name: Upload intermediate binary
+        if: steps.restore.outputs.found_artifact != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-bun-win-x64-${{ needs.check-version.outputs.version }}-${{ hashFiles('.github/workflows/build-bun-win.yml') }}
+          path: ${{ runner.temp }}/stage/bun.bin.exe
+
+      - name: Use restored binary
+        if: steps.restore.outputs.found_artifact == 'true'
+        run: |
+          [ -f "$RUNNER_TEMP/stage/bun.bin.exe" ] || { echo "restored bun.bin.exe missing"; ls -la "$RUNNER_TEMP/stage"; exit 1; }
+          echo "BUN_BIN=$RUNNER_TEMP/stage/bun.bin.exe" >> $GITHUB_ENV
+
+      - name: Native verify
+        run: |
           "$BUN_BIN" --version
 
       - name: Static ISA verify (no POPCNT/AVX-512)
