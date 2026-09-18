@@ -1,0 +1,90 @@
+name: probe-flags
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUN_TAG: bun-v1.4.2
+
+jobs:
+  probe:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun (for build script)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Restore source cache
+        id: src-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bun-src
+          key: src-bun-win-1.4.2
+
+      - name: Clone Bun
+        run: |
+          SRC="$RUNNER_TEMP/bun-src"
+          if [ ! -d "$SRC/.git" ]; then
+            rm -rf "$SRC"
+            git clone --depth 1 https://github.com/oven-sh/bun.git "$SRC"
+            [ -d "$SRC/.git" ] || exit 1
+          fi
+          cd "$SRC"
+          git fetch --depth 1 origin "$BUN_TAG" || exit 1
+          git checkout FETCH_HEAD
+          echo "BUN_SRC=$SRC" >> $GITHUB_ENV
+
+      - name: Apply Penryn patch (same as build)
+        run: |
+          cd "$BUN_SRC"
+          sed -i 's/-march=nehalem/-march=penryn/g' scripts/build/flags.ts
+          perl -0pi -e 's/export const globalFlags: Flag\[\] = \[/export const globalFlags: Flag[] = [\n  {\n    flag: ["-mno-sse4.2", "-mno-popcnt"],\n    when: c => c.x64,\n    desc: "Penryn baseline: no SSE4.2\/POPCNT",\n  },/' scripts/build/flags.ts
+          { grep -rl "HWY_DISABLED_TARGETS" scripts/ || true; } | while IFS= read -r f; do
+            perl -pi -e 's/HWY_DISABLED_TARGETS=[^"'"'"'\s,\]]+/HWY_DISABLED_TARGETS=3032/g' "$f"
+            perl -pi -e 's/HWY_ALL_SVE-HWY_SVE2_128/3032/g' "$f"
+          done
+          if ! grep -rq "HWY_DISABLED_TARGETS=3032" scripts/; then
+            perl -pi -e 's/"-mno-popcnt"/"-mno-popcnt", "-DHWY_DISABLED_TARGETS=3032"/' scripts/build/flags.ts
+          fi
+          sed -i 's/-Ctarget-cpu=nehalem/-Ctarget-cpu=penryn/g' scripts/build/rust.ts
+          sed -i 's/"nehalem"/"penryn"/g' scripts/build/rust.ts
+
+      - name: Configure only and dump flags
+        run: |
+          which ninja || choco install -y ninja
+          cd "$BUN_SRC"
+          bun run build:release --webkit=local --configure-only 2>&1 | tail -20
+          BD="$BUN_SRC/build/release"
+          ls "$BD/build.ninja" || { echo "no build.ninja"; find "$BUN_SRC/build" -maxdepth 2 | head -30; exit 1; }
+          mkdir -p "$RUNNER_TEMP/probe"
+          cd "$BD"
+          ninja -t commands "obj/src/jsc/bindings/highway_json.cpp.obj" > "$RUNNER_TEMP/probe/highway-cmd.txt" 2>&1 || echo "highway target lookup failed" > "$RUNNER_TEMP/probe/highway-cmd.txt"
+          grep -oE "(-m[^ ]*|-DHWY[^ ]*|/clang:[^ ]*|/arch:[^ ]*)" "$RUNNER_TEMP/probe/highway-cmd.txt" | sort -u > "$RUNNER_TEMP/probe/highway-flags.txt" || true
+          echo "=== highway TU flags ==="
+          cat "$RUNNER_TEMP/probe/highway-flags.txt"
+          echo "=== cargo config ==="
+          find "$BD" -maxdepth 3 -name "config.toml" -path "*cargo*" 2>/dev/null | head -3
+          CARGO_CFG=$(find "$BD" -maxdepth 4 -name "config.toml" -path "*cargo*" 2>/dev/null | head -1 || true)
+          if [ -n "$CARGO_CFG" ]; then
+            grep -i "target-cpu\|rustflags" "$CARGO_CFG" | head -10
+            cp "$CARGO_CFG" "$RUNNER_TEMP/probe/cargo-config.toml"
+          fi
+          echo "=== webkit cmake flags ==="
+          grep -i "CMAKE_C_FLAGS\|CMAKE_CXX_FLAGS" "$BD/deps/WebKit/CMakeCache.txt" 2>/dev/null | head -6 || echo "no webkit CMakeCache yet"
+
+      - name: Upload probe results
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-flags
+          path: ${{ runner.temp }}/probe
