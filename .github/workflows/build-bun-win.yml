@@ -78,6 +78,14 @@ jobs:
           path: ${{ runner.temp }}/dl-cache
           key: dl-bun-win
 
+      - name: Restore Bun build cache
+        id: bun-cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bun-cache
+          key: buncache-win-${{ needs.check-version.outputs.version }}
+
       - name: Setup MSVC env
         if: steps.restore.outputs.found_artifact != 'true'
         uses: ilammy/msvc-dev-cmd@v1
@@ -136,12 +144,10 @@ jobs:
 
       - name: Setup ccache
         if: steps.restore.outputs.found_artifact != 'true'
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: bun-penryn-win-${{ needs.check-version.outputs.version }}
-          restore-keys: |
-            bun-penryn-win-
-          max-size: 3G
+        run: |
+          export CCACHE_DIR="$RUNNER_TEMP/bun-cache/ccache"
+          ccache -M 3G
+          ccache -s || true
 
       - name: Setup Bun (for build script)
         if: steps.restore.outputs.found_artifact != 'true'
@@ -335,7 +341,7 @@ jobs:
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
-          bun run build:release --webkit=local 2>&1
+          bun run build:release --webkit=local --cacheDir="$RUNNER_TEMP/bun-cache" 2>&1
 
       - name: Attribute POPCNT to objects
         if: steps.restore.outputs.found_artifact != 'true'
