@@ -57,16 +57,17 @@ jobs:
       - name: Install system deps
         run: |
           choco install -y ninja ccache nasm
+          mkdir -p /tmp/llvm-dl
           for i in 1 2 3; do
-            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o "$RUNNER_TEMP/llvm.tar.xz" && break
+            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
             echo "LLVM download attempt $i failed"
-            rm -f "$RUNNER_TEMP/llvm.tar.xz"
+            rm -f /tmp/llvm-dl/llvm.tar.xz
             [ $i -lt 3 ] && sleep 30
           done
-          [ -s "$RUNNER_TEMP/llvm.tar.xz" ] || { echo "LLVM download failed"; exit 1; }
+          [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
           mkdir -p /c/llvm
-          tar xf "$RUNNER_TEMP/llvm.tar.xz" -C /c/llvm --strip-components=1
-          rm -f "$RUNNER_TEMP/llvm.tar.xz"
+          tar xf /tmp/llvm-dl/llvm.tar.xz -C /c/llvm --strip-components=1
+          rm -rf /tmp/llvm-dl
           echo "C:/llvm/bin" >> $GITHUB_PATH
           export PATH="C:/llvm/bin:$PATH"
           clang-cl --version | head -2
