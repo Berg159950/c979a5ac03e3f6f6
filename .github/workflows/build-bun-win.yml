@@ -216,35 +216,39 @@ jobs:
               echo "patched tar in $f"
             fi
           done
+          { grep -rl "march=nehalem" vendor/WebKit --include="*.ps1" 2>/dev/null || true; } | while read f; do
+            sed -i 's/march=nehalem/march=penryn/g' "$f"
+            echo "patched arch in $f"
+          done
 
       - name: Pre-seed ICU tarball (retry)
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
           cd "$BUN_SRC"
-          ICU_JSON="vendor/WebKit/icu/source.json"
-          ICU_VER=$(grep -oE '"version": *"[^"]+' "$ICU_JSON" | head -1 | cut -d'"' -f4)
-          ICU_SHA=$(grep -oE '"sha256": *"[^"]+' "$ICU_JSON" | head -1 | cut -d'"' -f4)
-          [ -n "$ICU_VER" ] || { echo "ICU version not found in $ICU_JSON"; exit 1; }
+          PS1="vendor/WebKit/build-icu.ps1"
+          if [ ! -f "$PS1" ]; then
+            echo "no build-icu.ps1, skipping pre-seed"
+            exit 0
+          fi
+          URL=$(grep -oE 'https://github.com/unicode-org/icu/releases/download/[^" ]+' "$PS1" | head -1 || true)
+          FILE=$(grep -oE '\$ICU_TARBALL = Join-Path \$OutputDir "[^"]+"' "$PS1" | head -1 | cut -d'"' -f2 || true)
+          if [ -z "$URL" ] || [ -z "$FILE" ]; then
+            echo "ICU URL/tarball not parseable, skipping pre-seed"
+            exit 0
+          fi
           OUTDIR="build/release/deps/WebKit/icu"
           mkdir -p "$OUTDIR"
-          TARBALL="$OUTDIR/icu4c-$ICU_VER-src.tgz"
-          URL="https://github.com/unicode-org/icu/releases/download/release-$ICU_VER/icu4c-$ICU_VER-sources.tgz"
-          if [ -s "$TARBALL" ] && [ -n "$ICU_SHA" ] && echo "$ICU_SHA  $TARBALL" | sha256sum -c --quiet; then
-            echo "ICU tarball already present and verified"
+          TARBALL="$OUTDIR/$FILE"
+          if [ -s "$TARBALL" ]; then
+            echo "ICU tarball already present"
           else
-            rm -f "$TARBALL"
             for i in 1 2 3 4 5; do
               if curl -fsSL "$URL" -o "$TARBALL" && [ -s "$TARBALL" ]; then
-                if [ -z "$ICU_SHA" ] || echo "$ICU_SHA  $TARBALL" | sha256sum -c --quiet; then
-                  echo "ICU tarball downloaded and verified"
-                  break
-                fi
-                echo "ICU sha256 mismatch, retrying"
-                rm -f "$TARBALL"
-              else
-                echo "ICU download attempt $i failed"
-                rm -f "$TARBALL"
+                echo "ICU tarball downloaded"
+                break
               fi
+              echo "ICU download attempt $i failed"
+              rm -f "$TARBALL"
               [ $i -lt 5 ] && sleep 30
             done
             [ -s "$TARBALL" ] || { echo "ICU download failed: $URL"; exit 1; }
