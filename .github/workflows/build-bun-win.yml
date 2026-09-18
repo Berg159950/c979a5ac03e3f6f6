@@ -1,0 +1,248 @@
+name: build-bun-penryn-win
+
+on:
+  workflow_dispatch:
+    inputs:
+      bun_tag:
+        description: Bun tag to build (empty = latest stable release)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUN_TAG: ${{ github.event.inputs.bun_tag }}
+
+jobs:
+  check-version:
+    runs-on: windows-2022
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Resolve Bun tag
+        id: tag
+        run: |
+          if [ -n "$BUN_TAG" ]; then
+            TAG="$BUN_TAG"
+          else
+            TAG=$(curl -fsSL https://api.github.com/repos/oven-sh/bun/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+          fi
+          [ -n "$TAG" ] || { echo "Failed to resolve Bun tag"; exit 1; }
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          VER="${TAG#bun-v}"
+          VER="${VER#v}"
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Using Bun tag: $TAG -> version $VER"
+
+  build:
+    needs: check-version
+    runs-on: windows-2022
+    outputs:
+      bun_version: ${{ needs.check-version.outputs.version }}
+      bun_sha256: ${{ steps.sha256.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC env
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install system deps
+        run: |
+          choco install -y llvm ninja ccache nasm
+          echo "C:/Program Files/LLVM/bin" >> $GITHUB_PATH
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: bun-penryn-win-${{ needs.check-version.outputs.version }}
+          restore-keys: |
+            bun-penryn-win-
+          max-size: 3G
+
+      - name: Setup Bun (for build script)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Clone Bun
+        run: |
+          SRC="$RUNNER_TEMP/bun-src"
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/oven-sh/bun.git "$SRC" && break
+            [ $i -lt 3 ] && sleep 10
+          done
+          [ -d "$SRC/.git" ] || exit 1
+          cd "$SRC"
+          for i in 1 2 3; do
+            git fetch --depth 1 origin ${{ needs.check-version.outputs.tag }} && break
+            [ $i -lt 3 ] && sleep 10
+          done
+          git checkout FETCH_HEAD
+          echo "BUN_SRC=$SRC" >> $GITHUB_ENV
+
+      - name: Resolve WebKit version from Bun source
+        id: webkit
+        run: |
+          cd "$BUN_SRC"
+          WEBKIT_VER=""
+          for f in scripts/build/deps/webkit.ts scripts/build/deps/webkit.js vendor/webkit-version.txt .github/workflows/*.yml; do
+            if [ -f "$f" ]; then
+              WEBKIT_VER=$(grep -oE '[0-9a-f]{40}' "$f" | head -1)
+              [ -n "$WEBKIT_VER" ] && break
+            fi
+          done
+          if [ -z "$WEBKIT_VER" ]; then
+            WEBKIT_VER=$(grep -r "oven-sh/WebKit" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+          fi
+          [ -z "$WEBKIT_VER" ] && WEBKIT_VER="549170099226f816a4b204ea1d8fa102fb79eefa"
+          echo "version=$WEBKIT_VER" >> $GITHUB_OUTPUT
+          echo "Resolved WebKit version: $WEBKIT_VER"
+
+      - name: Apply Penryn patch
+        run: |
+          cd "$BUN_SRC"
+          sed -i 's/-march=nehalem/-march=penryn/g' scripts/build/flags.ts
+          perl -0pi -e 's/export const globalFlags: Flag\[\] = \[/export const globalFlags: Flag[] = [\n  {\n    flag: ["-mno-sse4.2", "-mno-popcnt"],\n    when: c => c.x64,\n    desc: "Penryn baseline: no SSE4.2\/POPCNT",\n  },/' scripts/build/flags.ts
+          grep -q 'mno-sse4.2' scripts/build/flags.ts || { echo "ERROR: globalFlags patch failed"; exit 1; }
+          grep -rl "HWY_DISABLED_TARGETS" scripts/ | while read f; do
+            perl -pi -e 's/HWY_DISABLED_TARGETS=[^"'"'"'\s,\]]+/HWY_DISABLED_TARGETS=3032/g' "$f"
+            perl -pi -e 's/HWY_ALL_SVE-HWY_SVE2_128/3032/g' "$f"
+          done
+          if ! grep -rq "HWY_DISABLED_TARGETS=3032" scripts/; then
+            perl -pi -e 's/"-mno-popcnt"/"-mno-popcnt", "-DHWY_DISABLED_TARGETS=3032"/' scripts/build/flags.ts
+          fi
+          echo "HWY values in use:"
+          grep -rho "HWY_DISABLED_TARGETS=[^\"' ,;]*" scripts/ | sort -u
+          sed -i 's/-Ctarget-cpu=nehalem/-Ctarget-cpu=penryn/g' scripts/build/rust.ts
+          sed -i 's/"nehalem"/"penryn"/g' scripts/build/rust.ts
+          sed -i 's/Nehalem/Penryn/g' scripts/verify-baseline.ts
+          sed -i 's/NEHALEM_ALLOWED/PENRYN_ALLOWED/g' scripts/verify-baseline-static/src/main.rs
+          sed -i 's/nehalem/penryn/g' scripts/verify-baseline-static/src/main.rs
+          find . -name "CMakeLists.txt" -exec sed -i 's/-march=nehalem/-march=penryn/g' {} +
+          find . -name "CMakeLists.txt" -exec sed -i 's/target-cpu=nehalem/target-cpu=penryn/g' {} +
+          bun -e "const fs=require('fs');let l=fs.readFileSync('scripts/build/deps/zlib.ts','utf8').split('\n');l.splice(78,22);fs.writeFileSync('scripts/build/deps/zlib.ts',l.join('\n'))"
+          sed -i 's/"_avx2.c", "-mavx2"/"_avx2.c", "-msse4.1"/' scripts/build/deps/libwebp.ts
+          grep -rl --include="*.ts" "nehalem" scripts/ test/ | while read f; do
+            sed -i 's/\bnehalem\b/penryn/g; s/\bNehalem\b/Penryn/g; s/\bNEHALEM\b/PENRYN/g' "$f"
+          done
+          grep -rn --include="CMakeLists.txt" --include="*.ts" --include="*.rs" --exclude-dir=test --exclude-dir=.git "march=nehalem\|target-cpu=nehalem" . && { echo "ERROR: Nehalem still present!"; exit 1; } || echo "All Nehalem references patched successfully"
+
+      - name: Clone WebKit (required for --webkit=local)
+        run: |
+          rm -rf "$BUN_SRC/vendor/WebKit"
+          mkdir -p "$BUN_SRC/vendor"
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/oven-sh/WebKit.git "$BUN_SRC/vendor/WebKit" && break
+            [ $i -lt 3 ] && sleep 10
+          done
+          [ -d "$BUN_SRC/vendor/WebKit/.git" ] || exit 1
+          cd "$BUN_SRC/vendor/WebKit"
+          for i in 1 2 3; do
+            git fetch --depth 1 origin ${{ steps.webkit.outputs.version }} && break
+            [ $i -lt 3 ] && sleep 10
+          done
+          git checkout FETCH_HEAD
+
+      - name: Patch WebKit simdutf
+        run: |
+          cd "$BUN_SRC"
+          WD="vendor/WebKit/Source/WTF/wtf/simdutf"
+          [ -d "$WD" ] || WD="vendor/WebKit/Source/ThirdParty/simdutf"
+          [ -d "$WD" ] || WD="src/simdutf_sys"
+          echo "simdutf dir: $WD"
+          [ -d "$WD" ] || { echo "ERROR: simdutf dir not found"; exit 1; }
+          FILES=$(grep -rl "SIMDUTF_TARGET_WESTMERE" "$WD" 2>/dev/null)
+          [ -n "$FILES" ] || { echo "ERROR: simdutf sources not found in $WD"; exit 1; }
+          for f in $FILES; do
+            perl -0pi -e 's/#define SIMDUTF_IMPLEMENTATION_ICELAKE[^\n]*\\\n\s*\(\(SIMDUTF_IS_X86_64\) && \(SIMDUTF_COMPILER_SUPPORTS_VBMI2\)\)/#define SIMDUTF_IMPLEMENTATION_ICELAKE 0/' "$f"
+            sed -i 's/#define SIMDUTF_IMPLEMENTATION_HASWELL (SIMDUTF_IS_X86_64)/#define SIMDUTF_IMPLEMENTATION_HASWELL 0/' "$f"
+            sed -i 's/#define SIMDUTF_TARGET_WESTMERE SIMDUTF_TARGET_REGION("sse4.2,popcnt")/#define SIMDUTF_TARGET_WESTMERE SIMDUTF_TARGET_REGION("sse4.1")/' "$f"
+            sed -i 's/\b_popcnt64\b/__builtin_popcountll/g; s/\b__popcnt64\b/__builtin_popcountll/g; s/\b_popcnt32\b/__builtin_popcount/g; s/\b__popcnt\b/__builtin_popcount/g; s/\b_mm_popcnt_u64\b/__builtin_popcountll/g; s/\b_mm_popcnt_u32\b/__builtin_popcount/g' "$f"
+            echo "simdutf patched: $f"
+          done
+          grep -rn "SIMDUTF_IMPLEMENTATION_HASWELL 1\|SIMDUTF_IMPLEMENTATION_ICELAKE 1" "$WD" 2>/dev/null && { echo "ERROR: haswell/icelake still enabled!"; exit 1; } || echo "simdutf: haswell/icelake disabled OK"
+          grep -rn "_popcnt64\|_popcnt32\|__popcnt64\|__popcnt\b\|_mm_popcnt_u64\|_mm_popcnt_u32" "$WD" 2>/dev/null && { echo "ERROR: POPCNT intrinsics still present in simdutf!"; exit 1; } || echo "simdutf: POPCNT intrinsics removed OK"
+
+      - name: Build Bun (with local WebKit)
+        run: |
+          cd "$BUN_SRC"
+          bun run build:release --webkit=local 2>&1
+
+      - name: Native verify
+        run: |
+          BUN_BIN=$(find "$BUN_SRC/build/release" "$BUN_SRC/dist" -maxdepth 3 -type f -name "bun.exe" 2>/dev/null | head -1)
+          [ -n "$BUN_BIN" ] || { echo "bun.exe not found"; exit 1; }
+          echo "BUN_BIN=$BUN_BIN" >> $GITHUB_ENV
+          "$BUN_BIN" --version
+
+      - name: Static ISA verify (no POPCNT/AVX-512)
+        run: |
+          DISASM=$(which objdump llvm-objdump 2>/dev/null | head -1)
+          if [ -z "$DISASM" ]; then
+            echo "WARNING: no objdump available, skipping static ISA verify"
+            exit 0
+          fi
+          "$DISASM" -d "$BUN_BIN" > "$RUNNER_TEMP/disasm.txt" 2>/dev/null
+          echo "=== Instruction counts ==="
+          for pat in "popcnt" "vpopcntq\|vpopcntd" "vaes" "vzeroupper" "vpbroadcast"; do
+            echo "$pat: $(grep -c "\b$pat" "$RUNNER_TEMP/disasm.txt")"
+          done
+          if grep -qE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt"; then
+            echo "ERROR: POPCNT instructions still present in binary!"
+            grep -nE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt" | head -20
+            exit 1
+          fi
+          echo "OK: zero POPCNT instructions"
+          if grep -qE '\bvpopcntq\b|\bvpopcntd\b' "$RUNNER_TEMP/disasm.txt"; then
+            echo "ERROR: AVX-512 VPOPCNT instructions still present in binary!"
+            exit 1
+          fi
+          echo "OK: zero AVX-512 VPOPCNT instructions"
+
+      - name: Bundle exe
+        run: |
+          mkdir -p "$RUNNER_TEMP/bundle/lib"
+          cp "$BUN_BIN" "$RUNNER_TEMP/bundle/bun.bin.exe"
+          find "$(dirname "$BUN_BIN")" -maxdepth 1 -name "*.dll" -exec cp -n {} "$RUNNER_TEMP/bundle/lib/" \; 2>/dev/null || true
+          printf '@echo off\r\n"%%~dp0bun.bin.exe" %%*\r\n' > "$RUNNER_TEMP/bundle/bun.cmd"
+          printf '#!/bin/bash\nDIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"\nexec "$DIR/bun.bin.exe" "$@"\n' > "$RUNNER_TEMP/bundle/bun"
+          chmod +x "$RUNNER_TEMP/bundle/bun"
+
+      - name: Smoke test
+        run: |
+          "$RUNNER_TEMP/bundle/bun.bin.exe" --version
+
+      - name: Package artifact
+        run: |
+          rm -f "$RUNNER_TEMP/bun-penryn-win-x64.zip"
+          7z a -tzip "$RUNNER_TEMP/bun-penryn-win-x64.zip" "$RUNNER_TEMP/bundle/*"
+
+      - name: Compute SHA256
+        id: sha256
+        run: |
+          SHA=$(sha256sum "$RUNNER_TEMP/bun-penryn-win-x64.zip" | cut -d' ' -f1)
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bun-penryn-win-x64-${{ needs.check-version.outputs.version }}-${{ github.run_id }}
+          name: Bun Penryn Win x64 ${{ needs.check-version.outputs.version }}
+          body: |
+            Bun ${{ needs.check-version.outputs.version }} built for Penryn (SSE 4.1), Windows x64
+            SHA256: ${{ steps.sha256.outputs.sha256 }}
+          files: ${{ runner.temp }}/bun-penryn-win-x64.zip
+          draft: false
+          prerelease: false
+
+      - name: Upload artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-penryn-win-x64
+          path: ${{ runner.temp }}/bun-penryn-win-x64.zip
