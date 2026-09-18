@@ -217,6 +217,39 @@ jobs:
             fi
           done
 
+      - name: Pre-seed ICU tarball (retry)
+        if: steps.restore.outputs.found_artifact != 'true'
+        run: |
+          cd "$BUN_SRC"
+          ICU_JSON="vendor/WebKit/icu/source.json"
+          ICU_VER=$(grep -oE '"version": *"[^"]+' "$ICU_JSON" | head -1 | cut -d'"' -f4)
+          ICU_SHA=$(grep -oE '"sha256": *"[^"]+' "$ICU_JSON" | head -1 | cut -d'"' -f4)
+          [ -n "$ICU_VER" ] || { echo "ICU version not found in $ICU_JSON"; exit 1; }
+          OUTDIR="build/release/deps/WebKit/icu"
+          mkdir -p "$OUTDIR"
+          TARBALL="$OUTDIR/icu4c-$ICU_VER-src.tgz"
+          URL="https://github.com/unicode-org/icu/releases/download/release-$ICU_VER/icu4c-$ICU_VER-sources.tgz"
+          if [ -s "$TARBALL" ] && [ -n "$ICU_SHA" ] && echo "$ICU_SHA  $TARBALL" | sha256sum -c --quiet; then
+            echo "ICU tarball already present and verified"
+          else
+            rm -f "$TARBALL"
+            for i in 1 2 3 4 5; do
+              if curl -fsSL "$URL" -o "$TARBALL" && [ -s "$TARBALL" ]; then
+                if [ -z "$ICU_SHA" ] || echo "$ICU_SHA  $TARBALL" | sha256sum -c --quiet; then
+                  echo "ICU tarball downloaded and verified"
+                  break
+                fi
+                echo "ICU sha256 mismatch, retrying"
+                rm -f "$TARBALL"
+              else
+                echo "ICU download attempt $i failed"
+                rm -f "$TARBALL"
+              fi
+              [ $i -lt 5 ] && sleep 30
+            done
+            [ -s "$TARBALL" ] || { echo "ICU download failed: $URL"; exit 1; }
+          fi
+
       - name: Patch WebKit simdutf
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
