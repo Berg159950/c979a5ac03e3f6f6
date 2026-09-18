@@ -138,7 +138,7 @@ jobs:
           sed -i 's/-march=nehalem/-march=penryn/g' scripts/build/flags.ts
           perl -0pi -e 's/export const globalFlags: Flag\[\] = \[/export const globalFlags: Flag[] = [\n  {\n    flag: ["-mno-sse4.2", "-mno-popcnt"],\n    when: c => c.x64,\n    desc: "Penryn baseline: no SSE4.2\/POPCNT",\n  },/' scripts/build/flags.ts
           grep -q 'mno-sse4.2' scripts/build/flags.ts || { echo "ERROR: globalFlags patch failed"; exit 1; }
-          grep -rl "HWY_DISABLED_TARGETS" scripts/ | while read f; do
+          { grep -rl "HWY_DISABLED_TARGETS" scripts/ || true; } | while read f; do
             perl -pi -e 's/HWY_DISABLED_TARGETS=[^"'"'"'\s,\]]+/HWY_DISABLED_TARGETS=3032/g' "$f"
             perl -pi -e 's/HWY_ALL_SVE-HWY_SVE2_128/3032/g' "$f"
           done
@@ -155,7 +155,7 @@ jobs:
           find . -name "CMakeLists.txt" -exec sed -i 's/-march=nehalem/-march=penryn/g' {} +
           find . -name "CMakeLists.txt" -exec sed -i 's/target-cpu=nehalem/target-cpu=penryn/g' {} +
           bun -e "const fs=require('fs');let l=fs.readFileSync('scripts/build/deps/zlib.ts','utf8').split('\n');l.splice(78,22);fs.writeFileSync('scripts/build/deps/zlib.ts',l.join('\n'))"
-          grep -rl --include="*.ts" "nehalem" scripts/ test/ | while read f; do
+          { grep -rl --include="*.ts" "nehalem" scripts/ test/ || true; } | while read f; do
             sed -i 's/\bnehalem\b/penryn/g; s/\bNehalem\b/Penryn/g; s/\bNEHALEM\b/PENRYN/g' "$f"
           done
           grep -rn --include="CMakeLists.txt" --include="*.ts" --include="*.rs" --exclude-dir=test --exclude-dir=.git "march=nehalem\|target-cpu=nehalem" . && { echo "ERROR: Nehalem still present!"; exit 1; } || echo "All Nehalem references patched successfully"
@@ -179,7 +179,7 @@ jobs:
       - name: Patch WebKit ps1 tar calls
         run: |
           cd "$BUN_SRC"
-          grep -rl "tar\.exe" vendor/WebKit --include="*.ps1" 2>/dev/null | while read f; do
+          { grep -rl "tar\.exe" vendor/WebKit --include="*.ps1" 2>/dev/null || true; } | while read f; do
             if grep -q "System32.tar.exe" "$f"; then
               echo "already patched: $f"
             else
@@ -196,7 +196,7 @@ jobs:
           [ -d "$WD" ] || WD="src/simdutf_sys"
           echo "simdutf dir: $WD"
           [ -d "$WD" ] || { echo "ERROR: simdutf dir not found"; exit 1; }
-          FILES=$(grep -rl "SIMDUTF_TARGET_WESTMERE" "$WD" 2>/dev/null)
+          FILES=$(grep -rl "SIMDUTF_TARGET_WESTMERE" "$WD" 2>/dev/null || true)
           [ -n "$FILES" ] || { echo "ERROR: simdutf sources not found in $WD"; exit 1; }
           for f in $FILES; do
             perl -0pi -e 's/#define SIMDUTF_IMPLEMENTATION_ICELAKE[^\n]*\\\n\s*\(\(SIMDUTF_IS_X86_64\) && \(SIMDUTF_COMPILER_SUPPORTS_VBMI2\)\)/#define SIMDUTF_IMPLEMENTATION_ICELAKE 0/' "$f"
@@ -215,14 +215,20 @@ jobs:
 
       - name: Native verify
         run: |
-          BUN_BIN=$(find "$BUN_SRC/build/release" "$BUN_SRC/dist" -maxdepth 3 -type f -name "bun.exe" 2>/dev/null | head -1)
-          [ -n "$BUN_BIN" ] || { echo "bun.exe not found"; exit 1; }
+          echo "BUN_SRC=$BUN_SRC"
+          BUN_BIN=$(find "$BUN_SRC/build" -maxdepth 4 -type f -name "bun.exe" 2>/dev/null | head -1 || true)
+          if [ -z "$BUN_BIN" ]; then
+            echo "bun.exe not found, build tree:"
+            find "$BUN_SRC" -maxdepth 2 -type d 2>/dev/null | head -30
+            find "$BUN_SRC" -maxdepth 5 -name "bun*.exe" 2>/dev/null | head -10
+            exit 1
+          fi
           echo "BUN_BIN=$BUN_BIN" >> $GITHUB_ENV
           "$BUN_BIN" --version
 
       - name: Static ISA verify (no POPCNT/AVX-512)
         run: |
-          DISASM=$(which objdump llvm-objdump 2>/dev/null | head -1)
+          DISASM=$(which objdump llvm-objdump 2>/dev/null | head -1 || true)
           if [ -z "$DISASM" ]; then
             echo "WARNING: no objdump available, skipping static ISA verify"
             exit 0
@@ -230,7 +236,7 @@ jobs:
           "$DISASM" -d "$BUN_BIN" > "$RUNNER_TEMP/disasm.txt" 2>/dev/null
           echo "=== Instruction counts ==="
           for pat in "popcnt" "vpopcntq\|vpopcntd" "vaes" "vzeroupper" "vpbroadcast"; do
-            echo "$pat: $(grep -c "\b$pat" "$RUNNER_TEMP/disasm.txt")"
+            echo "$pat: $(grep -c "\b$pat" "$RUNNER_TEMP/disasm.txt" || true)"
           done
           if grep -qE '\bpopcnt\b' "$RUNNER_TEMP/disasm.txt"; then
             echo "ERROR: POPCNT instructions still present in binary!"
