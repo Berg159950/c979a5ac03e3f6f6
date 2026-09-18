@@ -85,7 +85,7 @@ jobs:
       - name: Install system deps
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
-          choco install -y ninja ccache
+          choco install -y ninja ccache nasm
           mkdir -p /tmp/llvm-dl "$RUNNER_TEMP/dl-cache"
           if [ -s "$RUNNER_TEMP/dl-cache/llvm.tar.xz" ]; then
             echo "LLVM tarball restored from cache"
@@ -100,9 +100,13 @@ jobs:
             [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
             cp /tmp/llvm-dl/llvm.tar.xz "$RUNNER_TEMP/dl-cache/llvm.tar.xz"
           fi
+          rm -rf /c/llvm
           mkdir -p /c/llvm
           tar xf /tmp/llvm-dl/llvm.tar.xz -C /c/llvm --strip-components=1
           rm -rf /tmp/llvm-dl
+          echo "LLVM tree:"
+          ls /c/llvm | head
+          ls /c/llvm/bin/clang-cl.exe || { echo "ERROR: clang-cl.exe missing, tree:"; find /c/llvm -maxdepth 3 -name "clang-cl*" 2>/dev/null | head; exit 1; }
           echo "C:/llvm/bin" >> $GITHUB_PATH
           export PATH="C:/llvm/bin:$PATH"
           clang-cl --version | head -2
@@ -121,7 +125,7 @@ jobs:
           fi
           if [ -z "$NASM_EXE" ]; then
             echo "installing nasm via winget..."
-            winget install -e --id NASM.NASM --accept-package-agreements --accept-source-agreements --silent
+            powershell -NoProfile -Command "winget install -e --id NASM.NASM --accept-package-agreements --accept-source-agreements --silent"
             NASM_EXE=$(find "/c/Program Files" -maxdepth 2 -name "nasm.exe" 2>/dev/null | head -1 || true)
           fi
           [ -n "$NASM_EXE" ] || { echo "ERROR: nasm unavailable"; exit 1; }
