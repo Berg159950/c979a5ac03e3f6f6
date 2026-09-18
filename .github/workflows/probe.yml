@@ -25,6 +25,23 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Setup MSVC env
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install LLVM 21
+        run: |
+          mkdir -p /tmp/llvm-dl
+          for i in 1 2 3; do
+            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
+            rm -f /tmp/llvm-dl/llvm.tar.xz
+            [ $i -lt 3 ] && sleep 30
+          done
+          [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
+          mkdir -p /c/llvm
+          tar xf /tmp/llvm-dl/llvm.tar.xz -C /c/llvm --strip-components=1
+          rm -rf /tmp/llvm-dl
+          echo "C:/llvm/bin" >> $GITHUB_PATH
+
       - name: Restore source cache
         id: src-cache
         uses: actions/cache@v4
