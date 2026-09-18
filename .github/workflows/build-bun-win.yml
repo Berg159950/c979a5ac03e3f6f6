@@ -340,6 +340,7 @@ jobs:
       - name: Attribute POPCNT to objects
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
+          set +e
           OD="/c/llvm/bin/llvm-objdump.exe"
           if [ ! -x "$OD" ]; then
             echo "llvm-objdump not found, skipping attribution"
@@ -349,8 +350,9 @@ jobs:
           find "$BUN_SRC/build" \( -name "*.obj" -o -name "*.lib" -o -name "*.rlib" \) 2>/dev/null | while read o; do
             n=$("$OD" -d "$o" 2>/dev/null | grep -cE '\bpopcnt\b' || true)
             [ "$n" != "0" ] && echo "$n $o"
-          done | sort -rn | head -30
+          done | sort -rn | head -30 || true
           echo "=== attribution done ==="
+          exit 0
 
       - name: Stage built binary
         if: steps.restore.outputs.found_artifact != 'true'
