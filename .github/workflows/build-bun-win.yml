@@ -281,6 +281,21 @@ jobs:
           cd "$BUN_SRC"
           bun run build:release --webkit=local 2>&1
 
+      - name: Attribute POPCNT to objects
+        if: steps.restore.outputs.found_artifact != 'true'
+        run: |
+          OD="/c/llvm/bin/llvm-objdump.exe"
+          if [ ! -x "$OD" ]; then
+            echo "llvm-objdump not found, skipping attribution"
+            exit 0
+          fi
+          echo "=== objects containing popcnt (top 30) ==="
+          find "$BUN_SRC/build" \( -name "*.obj" -o -name "*.lib" -o -name "*.rlib" \) 2>/dev/null | while read o; do
+            n=$("$OD" -d "$o" 2>/dev/null | grep -cE '\bpopcnt\b' || true)
+            [ "$n" != "0" ] && echo "$n $o"
+          done | sort -rn | head -30
+          echo "=== attribution done ==="
+
       - name: Stage built binary
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
