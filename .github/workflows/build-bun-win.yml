@@ -74,19 +74,20 @@ jobs:
 
       - name: Install nasm
         run: |
-          mkdir -p /tmp/nasm-dl /tmp/nasm-extract
+          rm -rf "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
+          mkdir -p "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
           for i in 1 2 3; do
-            curl -fsSL "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip" -o /tmp/nasm-dl/nasm.zip && break
+            curl -fsSL "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip" -o "$RUNNER_TEMP/nasm-dl/nasm.zip" && break
             echo "nasm download attempt $i failed"
-            rm -f /tmp/nasm-dl/nasm.zip
+            rm -f "$RUNNER_TEMP/nasm-dl/nasm.zip"
             [ $i -lt 3 ] && sleep 10
           done
-          [ -s /tmp/nasm-dl/nasm.zip ] || { echo "nasm download failed"; exit 1; }
-          powershell -NoProfile -Command "Expand-Archive -Path '/tmp/nasm-dl/nasm.zip' -DestinationPath '/tmp/nasm-extract'"
-          NASM_EXE=$(find /tmp/nasm-extract -type f -name "nasm.exe" | head -1)
+          [ -s "$RUNNER_TEMP/nasm-dl/nasm.zip" ] || { echo "nasm download failed"; exit 1; }
+          powershell -NoProfile -Command "Expand-Archive -Path '$RUNNER_TEMP/nasm-dl/nasm.zip' -DestinationPath '$RUNNER_TEMP/nasm-extract'"
+          NASM_EXE=$(find "$RUNNER_TEMP/nasm-extract" -type f -name "nasm.exe" | head -1)
           [ -n "$NASM_EXE" ] || { echo "nasm.exe not found in archive"; exit 1; }
           cp "$NASM_EXE" /c/llvm/bin/nasm.exe
-          rm -rf /tmp/nasm-dl /tmp/nasm-extract
+          rm -rf "$RUNNER_TEMP/nasm-dl" "$RUNNER_TEMP/nasm-extract"
           nasm -v
 
       - name: Setup ccache
