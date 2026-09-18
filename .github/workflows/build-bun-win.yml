@@ -62,6 +62,22 @@ jobs:
           path: ${{ runner.temp }}/stage
           if-no-artifact-found: warn
 
+      - name: Restore source cache
+        id: src-cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bun-src
+          key: src-bun-win-${{ needs.check-version.outputs.version }}
+
+      - name: Restore download cache
+        id: dl-cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dl-cache
+          key: dl-bun-win
+
       - name: Setup MSVC env
         if: steps.restore.outputs.found_artifact != 'true'
         uses: ilammy/msvc-dev-cmd@v1
@@ -69,15 +85,21 @@ jobs:
       - name: Install system deps
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
-          choco install -y ninja ccache nasm
-          mkdir -p /tmp/llvm-dl
-          for i in 1 2 3; do
-            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
-            echo "LLVM download attempt $i failed"
-            rm -f /tmp/llvm-dl/llvm.tar.xz
-            [ $i -lt 3 ] && sleep 30
-          done
-          [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
+          choco install -y ninja ccache
+          mkdir -p /tmp/llvm-dl "$RUNNER_TEMP/dl-cache"
+          if [ -s "$RUNNER_TEMP/dl-cache/llvm.tar.xz" ]; then
+            echo "LLVM tarball restored from cache"
+            cp "$RUNNER_TEMP/dl-cache/llvm.tar.xz" /tmp/llvm-dl/llvm.tar.xz
+          else
+            for i in 1 2 3; do
+              curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
+              echo "LLVM download attempt $i failed"
+              rm -f /tmp/llvm-dl/llvm.tar.xz
+              [ $i -lt 3 ] && sleep 30
+            done
+            [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
+            cp /tmp/llvm-dl/llvm.tar.xz "$RUNNER_TEMP/dl-cache/llvm.tar.xz"
+          fi
           mkdir -p /c/llvm
           tar xf /tmp/llvm-dl/llvm.tar.xz -C /c/llvm --strip-components=1
           rm -rf /tmp/llvm-dl
@@ -127,17 +149,36 @@ jobs:
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
           SRC="$RUNNER_TEMP/bun-src"
-          for i in 1 2 3; do
-            git clone --depth 1 https://github.com/oven-sh/bun.git "$SRC" && break
-            [ $i -lt 3 ] && sleep 10
-          done
-          [ -d "$SRC/.git" ] || exit 1
-          cd "$SRC"
-          for i in 1 2 3; do
-            git fetch --depth 1 origin ${{ needs.check-version.outputs.tag }} && break
-            [ $i -lt 3 ] && sleep 10
-          done
+          clone_fresh() {
+            rm -rf "$SRC"
+            for i in 1 2 3; do
+              git clone --depth 1 https://github.com/oven-sh/bun.git "$SRC" && break
+              [ $i -lt 3 ] && sleep 10
+            done
+            [ -d "$SRC/.git" ] || exit 1
+          }
+          if [ -d "$SRC/.git" ]; then
+            echo "reusing cached bun source"
+            cd "$SRC"
+            if ! git fetch --depth 1 origin ${{ needs.check-version.outputs.tag }}; then
+              echo "fetch failed, recloning"
+              clone_fresh
+              cd "$SRC"
+              for i in 1 2 3; do
+                git fetch --depth 1 origin ${{ needs.check-version.outputs.tag }} && break
+                [ $i -lt 3 ] && sleep 10
+              done
+            fi
+          else
+            clone_fresh
+            cd "$SRC"
+            for i in 1 2 3; do
+              git fetch --depth 1 origin ${{ needs.check-version.outputs.tag }} && break
+              [ $i -lt 3 ] && sleep 10
+            done
+          fi
           git checkout FETCH_HEAD
+          rm -rf "$SRC/build" "$SRC/dist"
           echo "BUN_SRC=$SRC" >> $GITHUB_ENV
 
       - name: Resolve WebKit version from Bun source
@@ -191,13 +232,17 @@ jobs:
       - name: Clone WebKit (required for --webkit=local)
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
-          rm -rf "$BUN_SRC/vendor/WebKit"
           mkdir -p "$BUN_SRC/vendor"
-          for i in 1 2 3; do
-            git clone --depth 1 https://github.com/oven-sh/WebKit.git "$BUN_SRC/vendor/WebKit" && break
-            [ $i -lt 3 ] && sleep 10
-          done
-          [ -d "$BUN_SRC/vendor/WebKit/.git" ] || exit 1
+          if [ -d "$BUN_SRC/vendor/WebKit/.git" ]; then
+            echo "reusing cached WebKit source"
+          else
+            rm -rf "$BUN_SRC/vendor/WebKit"
+            for i in 1 2 3; do
+              git clone --depth 1 https://github.com/oven-sh/WebKit.git "$BUN_SRC/vendor/WebKit" && break
+              [ $i -lt 3 ] && sleep 10
+            done
+            [ -d "$BUN_SRC/vendor/WebKit/.git" ] || exit 1
+          fi
           cd "$BUN_SRC/vendor/WebKit"
           for i in 1 2 3; do
             git fetch --depth 1 origin ${{ steps.webkit.outputs.version }} && break
@@ -238,14 +283,20 @@ jobs:
             exit 0
           fi
           OUTDIR="build/release/deps/WebKit/icu"
-          mkdir -p "$OUTDIR"
+          mkdir -p "$OUTDIR" "$RUNNER_TEMP/dl-cache"
           TARBALL="$OUTDIR/$FILE"
+          DL="$RUNNER_TEMP/dl-cache/$(basename "$URL")"
+          if [ -s "$DL" ]; then
+            echo "ICU tarball restored from cache"
+            cp "$DL" "$TARBALL"
+          fi
           if [ -s "$TARBALL" ]; then
             echo "ICU tarball already present"
           else
             for i in 1 2 3 4 5; do
               if curl -fsSL "$URL" -o "$TARBALL" && [ -s "$TARBALL" ]; then
                 echo "ICU tarball downloaded"
+                cp "$TARBALL" "$DL"
                 break
               fi
               echo "ICU download attempt $i failed"
