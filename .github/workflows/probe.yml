@@ -42,6 +42,30 @@ jobs:
           rm -rf /tmp/llvm-dl
           echo "C:/llvm/bin" >> $GITHUB_PATH
 
+      - name: Install nasm
+        run: |
+          choco install -y nasm
+          echo "--- chocolatey bin:"; ls /c/ProgramData/chocolatey/bin/ 2>/dev/null | grep -i nasm || true
+          echo "--- chocolatey lib:"; ls /c/ProgramData/chocolatey/lib/ 2>/dev/null | grep -i nasm || true
+          echo "--- find:"; find /c/ProgramData/chocolatey -maxdepth 4 -iname "*nasm*" 2>/dev/null | head -10 || true
+          NASM_EXE=""
+          for d in "/c/ProgramData/chocolatey/bin" "/c/Program Files/NASM" "/c/Program Files/nasm"; do
+            if [ -x "$d/nasm.exe" ]; then NASM_EXE="$d/nasm.exe"; break; fi
+          done
+          if [ -z "$NASM_EXE" ]; then
+            NASM_EXE=$(find /c/ProgramData/chocolatey/lib -maxdepth 4 -name "nasm.exe" 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$NASM_EXE" ]; then
+            echo "installing nasm via winget..."
+            powershell -NoProfile -Command "winget install -e --id NASM.NASM --accept-package-agreements --accept-source-agreements --silent"
+            NASM_EXE=$(find "/c/Program Files" -maxdepth 2 -name "nasm.exe" 2>/dev/null | head -1 || true)
+          fi
+          [ -n "$NASM_EXE" ] || { echo "ERROR: nasm unavailable"; exit 1; }
+          echo "Using nasm at $NASM_EXE"
+          cp "$NASM_EXE" /c/llvm/bin/nasm.exe
+          export PATH="/c/llvm/bin:$PATH"
+          nasm -v
+
       - name: Restore source cache
         id: src-cache
         uses: actions/cache@v4
