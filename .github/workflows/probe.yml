@@ -1,0 +1,166 @@
+name: probe-flags
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUN_TAG: bun-v1.4.2
+
+jobs:
+  probe:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun (for build script)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup MSVC env
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install LLVM 21
+        run: |
+          mkdir -p /tmp/llvm-dl
+          for i in 1 2 3; do
+            curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
+            rm -f /tmp/llvm-dl/llvm.tar.xz
+            [ $i -lt 3 ] && sleep 30
+          done
+          [ -s /tmp/llvm-dl/llvm.tar.xz ] || { echo "LLVM download failed"; exit 1; }
+          mkdir -p /c/llvm
+          tar xf /tmp/llvm-dl/llvm.tar.xz -C /c/llvm --strip-components=1
+          rm -rf /tmp/llvm-dl
+          echo "C:/llvm/bin" >> $GITHUB_PATH
+
+      - name: Install nasm
+        run: |
+          choco install -y nasm
+          echo "--- chocolatey bin:"; ls /c/ProgramData/chocolatey/bin/ 2>/dev/null | grep -i nasm || true
+          echo "--- chocolatey lib:"; ls /c/ProgramData/chocolatey/lib/ 2>/dev/null | grep -i nasm || true
+          echo "--- find:"; find /c/ProgramData/chocolatey -maxdepth 4 -iname "*nasm*" 2>/dev/null | head -10 || true
+          NASM_EXE=""
+          for d in "/c/ProgramData/chocolatey/bin" "/c/Program Files/NASM" "/c/Program Files/nasm"; do
+            if [ -x "$d/nasm.exe" ]; then NASM_EXE="$d/nasm.exe"; break; fi
+          done
+          if [ -z "$NASM_EXE" ]; then
+            NASM_EXE=$(find /c/ProgramData/chocolatey/lib -maxdepth 4 -name "nasm.exe" 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "$NASM_EXE" ]; then
+            echo "installing nasm via winget..."
+            powershell -NoProfile -Command "winget install -e --id NASM.NASM --accept-package-agreements --accept-source-agreements --silent"
+            NASM_EXE=$(find "/c/Program Files" -maxdepth 2 -name "nasm.exe" 2>/dev/null | head -1 || true)
+          fi
+          [ -n "$NASM_EXE" ] || { echo "ERROR: nasm unavailable"; exit 1; }
+          echo "Using nasm at $NASM_EXE"
+          cp "$NASM_EXE" /c/llvm/bin/nasm.exe
+          export PATH="/c/llvm/bin:$PATH"
+          nasm -v
+
+      - name: Restore source cache
+        id: src-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bun-src
+          key: src-bun-win-1.4.2
+
+      - name: Clone Bun
+        run: |
+          SRC="$RUNNER_TEMP/bun-src"
+          if [ ! -d "$SRC/.git" ]; then
+            rm -rf "$SRC"
+            git clone --depth 1 https://github.com/oven-sh/bun.git "$SRC"
+            [ -d "$SRC/.git" ] || exit 1
+          fi
+          cd "$SRC"
+          git fetch --depth 1 origin "$BUN_TAG" || exit 1
+          git checkout FETCH_HEAD
+          echo "BUN_SRC=$SRC" >> $GITHUB_ENV
+
+      - name: Apply Penryn patch (same as build)
+        run: |
+          cd "$BUN_SRC"
+          sed -i 's/-march=nehalem/-march=penryn/g' scripts/build/flags.ts
+          perl -0pi -e 's/export const globalFlags: Flag\[\] = \[/export const globalFlags: Flag[] = [\n  {\n    flag: ["-mno-sse4.2", "-mno-popcnt"],\n    when: c => c.x64,\n    desc: "Penryn baseline: no SSE4.2\/POPCNT",\n  },/' scripts/build/flags.ts
+          { grep -rl "HWY_DISABLED_TARGETS" scripts/ || true; } | while IFS= read -r f; do
+            perl -pi -e 's/HWY_DISABLED_TARGETS=[^"'"'"'\s,\]]+/HWY_DISABLED_TARGETS=3032/g' "$f"
+            perl -pi -e 's/HWY_ALL_SVE-HWY_SVE2_128/3032/g' "$f"
+          done
+          if ! grep -rq "HWY_DISABLED_TARGETS=3032" scripts/; then
+            perl -pi -e 's/"-mno-popcnt"/"-mno-popcnt", "-DHWY_DISABLED_TARGETS=3032"/' scripts/build/flags.ts
+          fi
+          sed -i 's/-Ctarget-cpu=nehalem/-Ctarget-cpu=penryn/g' scripts/build/rust.ts
+          sed -i 's/"nehalem"/"penryn"/g' scripts/build/rust.ts
+
+      - name: Resolve WebKit version from Bun source
+        id: webkit
+        run: |
+          cd "$BUN_SRC"
+          WEBKIT_VER=""
+          for f in scripts/build/deps/webkit.ts scripts/build/deps/webkit.js vendor/webkit-version.txt .github/workflows/*.yml; do
+            if [ -f "$f" ]; then
+              WEBKIT_VER=$(grep -oE '[0-9a-f]{40}' "$f" | head -1)
+              [ -n "$WEBKIT_VER" ] && break
+            fi
+          done
+          if [ -z "$WEBKIT_VER" ]; then
+            WEBKIT_VER=$(grep -r "oven-sh/WebKit" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+          fi
+          [ -z "$WEBKIT_VER" ] && WEBKIT_VER="549170099226f816a4b204ea1d8fa102fb79eefa"
+          echo "version=$WEBKIT_VER" >> $GITHUB_OUTPUT
+          echo "Resolved WebKit version: $WEBKIT_VER"
+
+      - name: Clone WebKit
+        run: |
+          mkdir -p "$BUN_SRC/vendor"
+          if [ ! -d "$BUN_SRC/vendor/WebKit/.git" ]; then
+            rm -rf "$BUN_SRC/vendor/WebKit"
+            git clone --depth 1 https://github.com/oven-sh/WebKit.git "$BUN_SRC/vendor/WebKit"
+            [ -d "$BUN_SRC/vendor/WebKit/.git" ] || exit 1
+          fi
+          cd "$BUN_SRC/vendor/WebKit"
+          git fetch --depth 1 origin ${{ steps.webkit.outputs.version }} || exit 1
+          git checkout FETCH_HEAD
+
+      - name: Configure only and dump flags
+        run: |
+          which ninja || choco install -y ninja
+          cd "$BUN_SRC"
+          bun run build:release --webkit=local --configure-only 2>&1 | tail -20
+          BD="$BUN_SRC/build/release"
+          ls "$BD/build.ninja" || { echo "no build.ninja"; find "$BUN_SRC/build" -maxdepth 2 | head -30; exit 1; }
+          mkdir -p "$RUNNER_TEMP/probe"
+          cd "$BD"
+          ninja -t commands "obj/src/jsc/bindings/highway_json.cpp.obj" > "$RUNNER_TEMP/probe/highway-cmd.txt" 2>&1 || echo "highway target lookup failed" > "$RUNNER_TEMP/probe/highway-cmd.txt"
+          grep -oE "(-m[^ ]*|-DHWY[^ ]*|/clang:[^ ]*|/arch:[^ ]*)" "$RUNNER_TEMP/probe/highway-cmd.txt" | sort -u > "$RUNNER_TEMP/probe/highway-flags.txt" || true
+          echo "=== highway TU flags ==="
+          cat "$RUNNER_TEMP/probe/highway-flags.txt"
+          echo "=== compile_commands.json ==="
+          CC_JSON=$(find "$BUN_SRC/build" -maxdepth 4 -name "compile_commands.json" 2>/dev/null | head -1 || true)
+          [ -n "$CC_JSON" ] || { echo "no compile_commands.json"; find "$BUN_SRC/build" -maxdepth 3 -type f -name "*.json" 2>/dev/null | head; exit 1; }
+          echo "found: $CC_JSON"
+          bun -e "const fs=require('fs');const a=process.argv.slice(1);const db=JSON.parse(fs.readFileSync(a[0]));const hw=db.filter(e=>e.file.includes('highway'));console.log('total '+db.length+' hw '+hw.length);fs.writeFileSync(a[1],hw.map(e=>e.command||(e.arguments||[]).join(' ')).join('\n\n'))" "$CC_JSON" "$RUNNER_TEMP/probe/highway-commands.txt"
+          echo "=== cargo config ==="
+          find "$BD" -maxdepth 3 -name "config.toml" -path "*cargo*" 2>/dev/null | head -3
+          CARGO_CFG=$(find "$BD" -maxdepth 4 -name "config.toml" -path "*cargo*" 2>/dev/null | head -1 || true)
+          if [ -n "$CARGO_CFG" ]; then
+            grep -i "target-cpu\|rustflags" "$CARGO_CFG" | head -10
+            cp "$CARGO_CFG" "$RUNNER_TEMP/probe/cargo-config.toml"
+          fi
+          echo "=== webkit cmake flags ==="
+          grep -i "CMAKE_C_FLAGS\|CMAKE_CXX_FLAGS" "$BD/deps/WebKit/CMakeCache.txt" 2>/dev/null | head -6 || echo "no webkit CMakeCache yet"
+
+      - name: Upload probe results
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-flags
+          path: ${{ runner.temp }}/probe
