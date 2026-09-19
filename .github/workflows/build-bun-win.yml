@@ -141,6 +141,14 @@ jobs:
       - name: Setup ccache
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
+          CCACHE_EXE=$(command -v ccache 2>/dev/null || true)
+          if [ -z "$CCACHE_EXE" ]; then
+            CCACHE_EXE=$(find /c/ProgramData/chocolatey/lib/ccache /c/ProgramData/chocolatey/bin -maxdepth 3 -name "ccache.exe" 2>/dev/null | head -1 || true)
+          fi
+          [ -n "$CCACHE_EXE" ] || { echo "ERROR: ccache.exe not found"; ls /c/ProgramData/chocolatey/lib/ 2>/dev/null | head -20; exit 1; }
+          echo "Using ccache at $CCACHE_EXE"
+          cp "$CCACHE_EXE" /c/llvm/bin/ccache.exe
+          export PATH="/c/llvm/bin:$PATH"
           export CCACHE_DIR="$RUNNER_TEMP/bun-cache/ccache"
           ccache -M 3G
           ccache -s || true
