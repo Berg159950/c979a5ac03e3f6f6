@@ -60,12 +60,12 @@ jobs:
           workflow: build-bun-win.yml
           name: stage-bun-win-x64-${{ needs.check-version.outputs.version }}-${{ hashFiles('.github/workflows/build-bun-win.yml') }}
           path: ${{ runner.temp }}/stage
-          if-no-artifact-found: warn
+          if_no_artifact_found: warn
 
       - name: Restore source cache
         id: src-cache
         if: steps.restore.outputs.found_artifact != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/bun-src
           key: src-bun-win-${{ needs.check-version.outputs.version }}
@@ -73,7 +73,7 @@ jobs:
       - name: Restore download cache
         id: dl-cache
         if: steps.restore.outputs.found_artifact != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/dl-cache
           key: dl-bun-win
@@ -81,10 +81,12 @@ jobs:
       - name: Restore Bun build cache
         id: bun-cache
         if: steps.restore.outputs.found_artifact != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/bun-cache
-          key: buncache-win-${{ needs.check-version.outputs.version }}
+          key: buncache-win-${{ needs.check-version.outputs.version }}-${{ github.run_id }}
+          restore-keys: |
+            buncache-win-${{ needs.check-version.outputs.version }}-
 
       - name: Setup MSVC env
         if: steps.restore.outputs.found_artifact != 'true'
@@ -267,6 +269,14 @@ jobs:
           done
           git checkout FETCH_HEAD
 
+      - name: Save source cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/bun-src
+          key: src-bun-win-${{ needs.check-version.outputs.version }}
+
       - name: Patch WebKit ps1 tar calls
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
@@ -323,6 +333,14 @@ jobs:
             [ -s "$TARBALL" ] || { echo "ICU download failed: $URL"; exit 1; }
           fi
 
+      - name: Save download cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dl-cache
+          key: dl-bun-win
+
       - name: Patch WebKit simdutf
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
@@ -335,6 +353,7 @@ jobs:
           FILES=$(grep -rl "SIMDUTF_TARGET_WESTMERE" "$WD" 2>/dev/null || true)
           [ -n "$FILES" ] || { echo "ERROR: simdutf sources not found in $WD"; exit 1; }
           for f in $FILES; do
+            perl -pi -e 's/\r\n?/\n/g' "$f"
             perl -0pi -e 's/(#ifndef SIMDUTF_IMPLEMENTATION_ICELAKE\n)(?:.*\n)*?(#endif)/$1  #define SIMDUTF_IMPLEMENTATION_ICELAKE 0\n$2/' "$f"
             sed -i 's/#define SIMDUTF_IMPLEMENTATION_HASWELL (SIMDUTF_IS_X86_64)/#define SIMDUTF_IMPLEMENTATION_HASWELL 0/' "$f"
             sed -i 's/#define SIMDUTF_TARGET_WESTMERE SIMDUTF_TARGET_REGION("sse4.2,popcnt")/#define SIMDUTF_TARGET_WESTMERE SIMDUTF_TARGET_REGION("sse4.1")/' "$f"
@@ -349,6 +368,14 @@ jobs:
         run: |
           cd "$BUN_SRC"
           bun run build:release --webkit=local --cacheDir="$RUNNER_TEMP/bun-cache" 2>&1
+
+      - name: Save Bun build cache
+        if: steps.restore.outputs.found_artifact != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/bun-cache
+          key: buncache-win-${{ needs.check-version.outputs.version }}-${{ github.run_id }}
 
       - name: Attribute POPCNT to objects
         if: steps.restore.outputs.found_artifact != 'true'
