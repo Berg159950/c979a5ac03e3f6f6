@@ -101,6 +101,36 @@ jobs:
           sed -i 's/-Ctarget-cpu=nehalem/-Ctarget-cpu=penryn/g' scripts/build/rust.ts
           sed -i 's/"nehalem"/"penryn"/g' scripts/build/rust.ts
 
+      - name: Resolve WebKit version from Bun source
+        id: webkit
+        run: |
+          cd "$BUN_SRC"
+          WEBKIT_VER=""
+          for f in scripts/build/deps/webkit.ts scripts/build/deps/webkit.js vendor/webkit-version.txt .github/workflows/*.yml; do
+            if [ -f "$f" ]; then
+              WEBKIT_VER=$(grep -oE '[0-9a-f]{40}' "$f" | head -1)
+              [ -n "$WEBKIT_VER" ] && break
+            fi
+          done
+          if [ -z "$WEBKIT_VER" ]; then
+            WEBKIT_VER=$(grep -r "oven-sh/WebKit" --include="*.ts" --include="*.js" --include="*.json" . 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+          fi
+          [ -z "$WEBKIT_VER" ] && WEBKIT_VER="549170099226f816a4b204ea1d8fa102fb79eefa"
+          echo "version=$WEBKIT_VER" >> $GITHUB_OUTPUT
+          echo "Resolved WebKit version: $WEBKIT_VER"
+
+      - name: Clone WebKit
+        run: |
+          mkdir -p "$BUN_SRC/vendor"
+          if [ ! -d "$BUN_SRC/vendor/WebKit/.git" ]; then
+            rm -rf "$BUN_SRC/vendor/WebKit"
+            git clone --depth 1 https://github.com/oven-sh/WebKit.git "$BUN_SRC/vendor/WebKit"
+            [ -d "$BUN_SRC/vendor/WebKit/.git" ] || exit 1
+          fi
+          cd "$BUN_SRC/vendor/WebKit"
+          git fetch --depth 1 origin ${{ steps.webkit.outputs.version }} || exit 1
+          git checkout FETCH_HEAD
+
       - name: Configure only and dump flags
         run: |
           which ninja || choco install -y ninja
