@@ -142,13 +142,16 @@ jobs:
         if: steps.restore.outputs.found_artifact != 'true'
         run: |
           CCACHE_EXE=$(command -v ccache 2>/dev/null || true)
-          if [ -z "$CCACHE_EXE" ]; then
-            CCACHE_EXE=$(find /c/ProgramData/chocolatey/lib/ccache /c/ProgramData/chocolatey/bin -maxdepth 3 -name "ccache.exe" 2>/dev/null | head -1 || true)
+          if [ -n "$CCACHE_EXE" ] && [ "$(stat -c%s "$CCACHE_EXE" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+            echo "real ccache on PATH: $CCACHE_EXE"
+          else
+            CCACHE_EXE=$(find /c/ProgramData/chocolatey/lib/ccache /c/ProgramData/chocolatey/bin /c/tools -maxdepth 4 -name "ccache.exe" -size +1M 2>/dev/null | head -1 || true)
           fi
-          [ -n "$CCACHE_EXE" ] || { echo "ERROR: ccache.exe not found"; ls /c/ProgramData/chocolatey/lib/ 2>/dev/null | head -20; exit 1; }
+          [ -n "$CCACHE_EXE" ] || { echo "ERROR: real ccache.exe not found"; exit 1; }
           echo "Using ccache at $CCACHE_EXE"
           cp "$CCACHE_EXE" /c/llvm/bin/ccache.exe
           export PATH="/c/llvm/bin:$PATH"
+          ccache --version | head -2
           export CCACHE_DIR="$RUNNER_TEMP/bun-cache/ccache"
           ccache -M 3G
           ccache -s || true
