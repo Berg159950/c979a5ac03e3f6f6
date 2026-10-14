@@ -278,6 +278,10 @@ jobs:
             git fetch --depth 1 origin ${{ steps.webkit.outputs.version }} && break
             [ $i -lt 3 ] && sleep 10
           done
+          # Windows MAX_PATH: WebKit ships LayoutTests paths >260 chars;
+          # runner git defaults core.longpaths=false, so file creation
+          # fails with "Filename too long" and checkout exits 1.
+          git config core.longpaths true
           # The source cache may hold a tree from a different WebKit pin;
           # renamed/removed upstream files then linger as untracked leftovers
           # and block the checkout ("would be removed by checkout"). Retry
