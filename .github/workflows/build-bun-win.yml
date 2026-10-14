@@ -275,6 +275,18 @@ jobs:
             sed -i 's/\bnehalem\b/penryn/g; s/\bNehalem\b/Penryn/g; s/\bNEHALEM\b/PENRYN/g' "$f"
           done
           grep -rn --include="CMakeLists.txt" --include="*.ts" --include="*.rs" --exclude-dir=test --exclude-dir=.git "march=nehalem\|target-cpu=nehalem" . && { echo "ERROR: Nehalem still present!"; exit 1; } || echo "All Nehalem references patched successfully"
+          # jsc link: lld-link 23 reports the weak WTFTimer/Bun shims
+          # (wtf/bun/RunLoopBun.cpp) as duplicate symbols when linking
+          # jsc.exe from ThinLTO bitcode. Upstream removed the strong
+          # fallback in 1.4.3 (1.4.2 had `Bun__thisThreadHasVM(){return
+          # false;}` and linked fine); the jsc shell carries no Rust
+          # strong defs, so every duplicate is a null-equivalent weak
+          # stub and first-wins keeps the intended Generic-loop fallback.
+          # Scoped to WebKit-cmake exe targets only: bun.exe links via
+          # its own ninja rules and is unaffected.
+          perl -0pi -e 's/(args\.CMAKE_MSVC_RUNTIME_LIBRARY = cfg\.debug \? "MultiThreadedDebug" : "MultiThreaded";)/$1\n      args.CMAKE_EXE_LINKER_FLAGS = "\/FORCE:MULTIPLE";/' scripts/build/deps/webkit.ts
+          grep -q 'CMAKE_EXE_LINKER_FLAGS' scripts/build/deps/webkit.ts || { echo "ERROR: webkit link-flags patch failed"; exit 1; }
+          bun -e "const t = new Bun.Transpiler({loader:'ts'}); const src = await Bun.file('scripts/build/deps/webkit.ts').text(); t.transformSync(src); console.log('webkit.ts parses OK')"
 
       - name: Clone WebKit (required for --webkit=local)
         if: steps.restore.outputs.found_artifact != 'true'
