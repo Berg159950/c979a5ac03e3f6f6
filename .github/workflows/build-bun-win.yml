@@ -330,6 +330,24 @@ jobs:
           fi
           URL=$(grep -oE 'https://github.com/unicode-org/icu/releases/download/[^" ]+' "$PS1" | head -1 || true)
           FILE=$(grep -oE '\$ICU_TARBALL = Join-Path \$OutputDir "[^"]+"' "$PS1" | head -1 | cut -d'"' -f2 || true)
+          # Upstream templates URL/tarball with $ICU_VERSION, whose value
+          # lives in vendor/WebKit/icu/source.json ("version"). A literal
+          # $ in the URL 404s (and must never hard-fail: without a
+          # pre-seed the build downloads ICU itself).
+          ICU_VER=""
+          if [ -f "vendor/WebKit/icu/source.json" ]; then
+            ICU_VER=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' vendor/WebKit/icu/source.json | head -1 | grep -oE '[0-9][0-9.]*' | head -1 || true)
+          fi
+          if [ -n "$ICU_VER" ]; then
+            URL=${URL//\$ICU_VERSION/$ICU_VER}
+            FILE=${FILE//\$ICU_VERSION/$ICU_VER}
+          fi
+          case "$URL$FILE" in
+            *'$'*|'')
+              echo "ICU URL/tarball not parseable (URL=$URL FILE=$FILE), skipping pre-seed"
+              exit 0
+              ;;
+          esac
           if [ -z "$URL" ] || [ -z "$FILE" ]; then
             echo "ICU URL/tarball not parseable, skipping pre-seed"
             exit 0
