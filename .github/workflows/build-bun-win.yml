@@ -34,7 +34,7 @@ jobs:
           if [ -n "$BUN_TAG" ]; then
             TAG="$BUN_TAG"
           else
-            TAG=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/oven-sh/bun/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+            TAG=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/oven-sh/bun/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+' | head -1 || true)
           fi
           [ -n "$TAG" ] || { echo "Failed to resolve Bun tag"; exit 1; }
           echo "tag=$TAG" >> $GITHUB_OUTPUT
@@ -102,7 +102,7 @@ jobs:
             cp "$RUNNER_TEMP/dl-cache/llvm.tar.xz" /tmp/llvm-dl/llvm.tar.xz
           else
             for i in 1 2 3; do
-              curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
+              curl -fsSL --connect-timeout 20 --max-time 900 "https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.2/clang%2Bllvm-23.1.2-x86_64-pc-windows-msvc.tar.xz" -o /tmp/llvm-dl/llvm.tar.xz && break
               echo "LLVM download attempt $i failed"
               rm -f /tmp/llvm-dl/llvm.tar.xz
               [ $i -lt 3 ] && sleep 30
@@ -321,7 +321,7 @@ jobs:
             echo "ICU tarball already present"
           else
             for i in 1 2 3 4 5; do
-              if curl -fsSL "$URL" -o "$TARBALL" && [ -s "$TARBALL" ]; then
+              if curl -fsSL --connect-timeout 20 --max-time 900 "$URL" -o "$TARBALL" && [ -s "$TARBALL" ]; then
                 echo "ICU tarball downloaded"
                 cp "$TARBALL" "$DL"
                 break
