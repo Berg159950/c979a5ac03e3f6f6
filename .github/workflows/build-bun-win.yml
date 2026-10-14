@@ -127,10 +127,14 @@ jobs:
           ls /c/llvm/bin/clang-cl.exe || { echo "ERROR: clang-cl.exe missing, tree:"; find /c/llvm -maxdepth 3 -name "clang-cl*" 2>/dev/null | head; exit 1; }
           ls /c/llvm/bin/llvm-nm.exe || { echo "ERROR: llvm-nm.exe missing in C:/llvm/bin (bun needs one consistent LLVM tree, see BUN_TOOLCHAIN_LLVM)"; ls /c/llvm/bin | head -30; exit 1; }
           echo "C:/llvm/bin" >> $GITHUB_PATH
-          # Prepend so the downloaded LLVM 23 wins over the stale preinstalled
-          # one (C:\Program Files\LLVM, v20) in every later step (objdump in
-          # the verify steps, etc.). GITHUB_PATH alone only appends.
-          echo "PATH=C:/llvm/bin:$PATH" >> $GITHUB_ENV
+          # NOTE: do NOT prepend C:/llvm/bin to PATH via GITHUB_ENV. $PATH
+          # inside this bash step is Unix-style (/ucrt64/bin:/usr/bin:...);
+          # exporting it globally replaces the Windows-style PATH for all
+          # later steps and breaks Node-based actions ("Unable to locate
+          # executable file: powershell" in oven-sh/setup-bun). The bun
+          # build itself is pinned via BUN_TOOLCHAIN_LLVM (job env); the
+          # verify steps below use the explicit /c/llvm/bin/llvm-objdump
+          # path instead of relying on PATH order.
           export PATH="C:/llvm/bin:$PATH"
           clang-cl --version | head -2
 
@@ -492,7 +496,15 @@ jobs:
 
       - name: Static ISA verify (no POPCNT/AVX-512)
         run: |
-          DISASM=$(which objdump llvm-objdump 2>/dev/null | head -1 || true)
+          # Prefer the downloaded LLVM 23 objdump explicitly: plain `which`
+          # would find the stale preinstalled LLVM 20 first via PATH, and it
+          # may not parse objects from clang-cl 23.
+          DISASM=""
+          if [ -x "/c/llvm/bin/llvm-objdump.exe" ]; then
+            DISASM="/c/llvm/bin/llvm-objdump.exe"
+          else
+            DISASM=$(which objdump llvm-objdump 2>/dev/null | head -1 || true)
+          fi
           if [ -z "$DISASM" ]; then
             echo "WARNING: no objdump available, skipping static ISA verify"
             exit 0
