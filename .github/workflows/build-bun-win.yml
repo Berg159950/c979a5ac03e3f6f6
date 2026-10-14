@@ -318,6 +318,14 @@ jobs:
             sed -i 's/march=nehalem/march=penryn/g' "$f"
             echo "patched arch in $f"
           done
+          # Upstream typo: "$ICU_VERSION:" in build-icu.ps1 is an invalid
+          # variable reference (PowerShell reads ICU_VERSION as a drive).
+          # Must be "${ICU_VERSION}:" or the whole script fails to parse.
+          if grep -q '\$ICU_VERSION:' vendor/WebKit/build-icu.ps1 2>/dev/null; then
+            sed -i 's/\$ICU_VERSION:/${ICU_VERSION}:/g' vendor/WebKit/build-icu.ps1
+            echo "patched ICU_VERSION scoping in build-icu.ps1"
+          fi
+          grep -q '\$ICU_VERSION:' vendor/WebKit/build-icu.ps1 2>/dev/null && { echo "ERROR: bare \$ICU_VERSION: left in build-icu.ps1"; exit 1; } || echo "ps1 variable scoping OK"
 
       - name: Pre-seed ICU tarball (retry)
         if: steps.restore.outputs.found_artifact != 'true'
