@@ -46,6 +46,14 @@ jobs:
   build:
     needs: check-version
     runs-on: windows-2022
+    env:
+      # Pin ALL LLVM tools (clang-cl, llvm-nm, llvm-lib, lld-link, llvm-rc/mt)
+      # to the downloaded 23.1.2 tree. Without this, bun's tool discovery
+      # (scripts/build/tools.ts) picks llvm-nm from the stale preinstalled
+      # LLVM 20 at C:\Program Files\LLVM\bin, which cannot parse objects
+      # produced by clang-cl 23 ("Unknown attribute kind", Producer vs Reader
+      # mismatch) and fails deps/libuv/.undefined-symbols-checked.
+      BUN_TOOLCHAIN_LLVM: C:/llvm
     outputs:
       bun_version: ${{ needs.check-version.outputs.version }}
       bun_sha256: ${{ steps.sha256.outputs.sha256 }}
@@ -117,7 +125,12 @@ jobs:
           echo "LLVM tree:"
           ls /c/llvm | head
           ls /c/llvm/bin/clang-cl.exe || { echo "ERROR: clang-cl.exe missing, tree:"; find /c/llvm -maxdepth 3 -name "clang-cl*" 2>/dev/null | head; exit 1; }
+          ls /c/llvm/bin/llvm-nm.exe || { echo "ERROR: llvm-nm.exe missing in C:/llvm/bin (bun needs one consistent LLVM tree, see BUN_TOOLCHAIN_LLVM)"; ls /c/llvm/bin | head -30; exit 1; }
           echo "C:/llvm/bin" >> $GITHUB_PATH
+          # Prepend so the downloaded LLVM 23 wins over the stale preinstalled
+          # one (C:\Program Files\LLVM, v20) in every later step (objdump in
+          # the verify steps, etc.). GITHUB_PATH alone only appends.
+          echo "PATH=C:/llvm/bin:$PATH" >> $GITHUB_ENV
           export PATH="C:/llvm/bin:$PATH"
           clang-cl --version | head -2
 
